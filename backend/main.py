@@ -1,4 +1,4 @@
-﻿"""Portal RAG FastAPI backend."""
+﻿"""Backend FastAPI do Portal RAG."""
 
 from __future__ import annotations
 
@@ -57,36 +57,36 @@ def _origins_from_env() -> List[str]:
 
 ALLOWED_ORIGINS = _origins_from_env()
 PROMPT_TEMPLATE = """
-You are a focused retrieval assistant. Answer strictly with the context below.
-If the answer is not present, say "Based on the uploaded documents I could not find an answer.".
-Cite the filename and page whenever possible.
+Voce atua como assistente de recuperacao. Responda somente com o contexto abaixo.
+Se nao houver informacao, diga "Com base nos documentos enviados nao encontrei resposta.".
+Sempre cite nome do arquivo e pagina quando possivel.
 
-CONTEXT:
+CONTEXTO:
 {context}
 
-QUESTION:
+PERGUNTA:
 {question}
 """
 
 def build_embeddings() -> Optional[HuggingFaceEmbeddings]:  # type: ignore[name-defined]
     if not IMPORT_OK:
-        logger.warning("LangChain dependencies missing: %s", IMPORT_ERR)
+        logger.warning("Dependencias do LangChain ausentes: %s", IMPORT_ERR)
         return None
     try:
-        logger.info("Loading sentence-transformers embeddings")
+        logger.info("Carregando embeddings sentence-transformers")
         return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     except Exception as exc:
-        logger.exception("Could not load embeddings: %s", exc)
+        logger.exception("Falha ao carregar embeddings: %s", exc)
         return None
 
 def build_vectorstore(embeddings: Optional[HuggingFaceEmbeddings]):  # type: ignore[name-defined]
     if embeddings is None:
         return None
     try:
-        logger.info("Connecting to Chroma vector store at %s", VECTOR_DB_DIR)
+        logger.info("Conectando ao Chroma em %s", VECTOR_DB_DIR)
         return Chroma(persist_directory=str(VECTOR_DB_DIR), embedding_function=embeddings)
     except Exception as exc:
-        logger.exception("Could not initialise vector store: %s", exc)
+        logger.exception("Falha ao iniciar Chroma: %s", exc)
         return None
 
 def build_qa_chain(vectorstore):
@@ -103,7 +103,7 @@ def build_qa_chain(vectorstore):
             return_source_documents=True,
         )
     except Exception as exc:
-        logger.exception("Could not build QA chain: %s", exc)
+        logger.exception("Falha ao montar cadeia RAG: %s", exc)
         return None
 
 embeddings = build_embeddings()
@@ -112,7 +112,7 @@ qa_chain = build_qa_chain(vectordb)
 
 app = FastAPI(
     title="Portal RAG API",
-    description="Upload PDFs and query an Ollama-powered RAG pipeline.",
+    description="Envie PDFs e consulte respostas ancoradas em contexto local com Ollama.",
     version="2.0.0",
 )
 app.add_middleware(
@@ -124,26 +124,26 @@ app.add_middleware(
 )
 
 
-@app.get("/", summary="Service status")
+@app.get("/", summary="Status da API")
 async def root():
-    """Simple ping endpoint used by monitors."""
-    return {"status": "ok", "message": "Portal RAG backend is running."}
+    """Ping simples para monitoramento."""
+    return {"status": "ok", "message": "Backend Portal RAG ativo."}
 
 index_status: Dict[str, StatusLiteral] = {}
 index_errors: Dict[str, str] = {}
 
 
 def _ensure_ready(component: Optional[object], name: str) -> Optional[JSONResponse]:
-    """Return a 503 JSON response if a runtime dependency has not been initialised."""
+    """Retorna 503 caso o componente necessario nao esteja pronto."""
     if component is None:
-        return JSONResponse(status_code=503, content={"error": f"{name} is not initialised."})
+        return JSONResponse(status_code=503, content={"error": f"{name} nao inicializado."})
     return None
 
 
 async def _require_runtime_ready() -> Optional[JSONResponse]:
     if resp := _ensure_ready(embeddings, "Embeddings"):  # noqa: SIM108
         return resp
-    if resp := _ensure_ready(vectordb, "Vector store"):
+    if resp := _ensure_ready(vectordb, "Base vetorial"):
         return resp
     return None
 
@@ -151,61 +151,61 @@ async def _require_chain_ready() -> Optional[JSONResponse]:
     base_check = await _require_runtime_ready()
     if base_check is not None:
         return base_check
-    if resp := _ensure_ready(qa_chain, "Retrieval QA chain"):
+    if resp := _ensure_ready(qa_chain, "Cadeia RAG"):
         return resp
     return None
 
-@app.post("/upload/", summary="Upload & index a PDF")
+@app.post("/upload/", summary="Enviar e indexar PDF")
 async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     if resp := await _require_runtime_ready():
         return resp
     if not file.filename.lower().endswith(".pdf"):
-        return JSONResponse(status_code=400, content={"error": "Only PDF files are supported."})
+        return JSONResponse(status_code=400, content={"error": "Apenas PDFs sao aceitos."})
     if (file.content_type or "").lower() != "application/pdf":
-        return JSONResponse(status_code=400, content={"error": "Invalid content type for PDF."})
+        return JSONResponse(status_code=400, content={"error": "Content-Type invalido para PDF."})
 
     file_path = UPLOAD_DIR / file.filename
     try:
         payload = await file.read()
         if len(payload) < 10:
-            return JSONResponse(status_code=400, content={"error": "Empty or corrupted file."})
+            return JSONResponse(status_code=400, content={"error": "Arquivo vazio ou corrompido."})
         file_path.write_bytes(payload)
     except Exception as exc:
-        logger.exception("Failed to persist uploaded file: %s", exc)
-        return JSONResponse(status_code=500, content={"error": "Could not save file."})
+        logger.exception("Erro ao salvar arquivo enviado: %s", exc)
+        return JSONResponse(status_code=500, content={"error": "Nao foi possivel salvar o arquivo."})
 
     index_status[file.filename] = "queued"
     index_errors.pop(file.filename, None)
     background_tasks.add_task(process_and_index_pdf, file_path, file.filename)
-    return {"status": "ok", "message": f"File '{file.filename}' queued for processing."}
+    return {"status": "ok", "message": f"Arquivo '{file.filename}' aguardando indexacao."}
 
-@app.get("/index-status/{filename}", summary="Check indexing status")
+@app.get("/index-status/{filename}", summary="Consultar status de indexacao")
 async def index_status_endpoint(filename: str):
     status = index_status.get(filename)
     if status is None:
-        return JSONResponse(status_code=404, content={"error": "File not found."})
+        return JSONResponse(status_code=404, content={"error": "Arquivo nao encontrado."})
     return {"filename": filename, "status": status, "detail": index_errors.get(filename)}
 
-@app.post("/chat/", summary="Ask a question against indexed PDFs")
+@app.post("/chat/", summary="Consultar PDFs indexados")
 async def chat(query: str = Form(...)):
     if not query:
-        return JSONResponse(status_code=400, content={"error": "Query is required."})
+        return JSONResponse(status_code=400, content={"error": "A pergunta nao pode ser vazia."})
     if resp := await _require_chain_ready():
         return resp
 
-    logger.info("Received question: %s", query)
+    logger.info("Pergunta recebida: %s", query)
     try:
         result = qa_chain.invoke({"query": query})  # type: ignore[union-attr]
     except Exception as exc:
-        logger.exception("RAG pipeline failed: %s", exc)
-        return JSONResponse(status_code=500, content={"error": "LLM retrieval failed."})
+        logger.exception("Falha na cadeia RAG: %s", exc)
+        return JSONResponse(status_code=500, content={"error": "Erro ao consultar o LLM."})
 
-    answer = result.get("result", "No answer could be generated.")
+    answer = result.get("result", "Nao foi possivel gerar resposta.")
     sources_payload = []
     seen = set()
     for document in result.get("source_documents", []):
         meta = document.metadata or {}
-        src = meta.get("source", "unknown")
+        src = meta.get("source", "desconhecido")
         page = meta.get("page")
         key = (src, page)
         if key in seen:
@@ -215,7 +215,7 @@ async def chat(query: str = Form(...)):
 
     return {"answer": answer, "sources": sources_payload}
 
-@app.get("/health", summary="API health check")
+@app.get("/health", summary="Health check")
 async def health():
     return {
         "status": "ok",
@@ -227,10 +227,10 @@ async def health():
     }
 
 def process_and_index_pdf(file_path: Path, filename: str):
-    logger.info("Starting background indexing for %s", filename)
+    logger.info("Inicio da indexacao em segundo plano para %s", filename)
     if vectordb is None:
         index_status[filename] = "error"
-        index_errors[filename] = "Vector store unavailable"
+        index_errors[filename] = "Base vetorial indisponivel"
         return
     index_status[filename] = "processing"
     try:
@@ -241,16 +241,17 @@ def process_and_index_pdf(file_path: Path, filename: str):
         vectordb.add_documents(chunks)
         vectordb.persist()
         index_status[filename] = "done"
-        logger.info("Indexed %s into %d chunks", filename, len(chunks))
+        logger.info("Arquivo %s indexado em %d trechos", filename, len(chunks))
     except Exception as exc:
         index_status[filename] = "error"
         index_errors[filename] = str(exc)
-        logger.exception("Error while indexing %s: %s", filename, exc)
+        logger.exception("Erro durante indexacao de %s: %s", filename, exc)
     finally:
         try:
             if index_status.get(filename) == "done":
                 file_path.unlink(missing_ok=True)
         except Exception as cleanup_exc:
-            logger.warning("Could not remove temp file %s: %s", file_path, cleanup_exc)
+            logger.warning("Falha ao remover arquivo temporario %s: %s", file_path, cleanup_exc)
 
 *** End of File
+
