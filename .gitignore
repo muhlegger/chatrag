@@ -1,0 +1,22 @@
+﻿# Python
+.venv/
+__pycache__/
+*.pyc
+
+# FastAPI artefacts
+backend/db/
+backend/data/
+
+# Node/Vite
+frontend/node_modules/
+frontend/dist/
+
+# Editor/OS
+.DS_Store
+Thumbs.db
+
+# Local runs & diagnostics
+*.log
+dev.*
+backup-*/
+*.zip
