@@ -1,37 +1,37 @@
 ﻿# Portal RAG
 
-Portal RAG is a Retrieval-Augmented Generation workspace. Users upload PDFs, the backend indexes them with Chroma, and the chat UI asks Ollama for answers backed by those documents.
+Portal RAG é um workspace de RAG (Retrieval-Augmented Generation) focado em PDFs. O backend recebe o arquivo, quebra em trechos, grava os vetores no Chroma e usa o Ollama (LLaMA 3) para responder. O frontend entrega um chat único com contexto exibido de forma transparente.
 
-## Overview
+## Visão geral
 
-- **Backend:** FastAPI + LangChain + Chroma, with Ollama (LLaMA 3) as the LLM.
-- **Frontend:** React + Vite + Tailwind, focused on a clean chat experience and clear source attribution.
-- **Data flow:**
-  1. PDF upload hits `/upload/` and is queued for background processing.
-  2. PyPDF splits text, embeddings are stored in Chroma on disk.
-  3. `/chat/` runs a RetrievalQA chain (top-5 chunks) and returns the answer plus file/page metadata.
+- **Backend:** FastAPI + LangChain + Chroma + Ollama.
+- **Frontend:** React + Vite + Tailwind com paleta suave e chips de fonte.
+- **Fluxo:**
+  1. `/upload/` salva o PDF e agenda indexação em background.
+  2. PyPDF divide o texto, embeddings são persistidos em `CHROMA_DB_DIRECTORY`.
+  3. `/chat/` executa RetrievalQA (top‑5 chunks) e devolve resposta + arquivo/página.
 
 ```
-PDF -> FastAPI /upload --background--> PyPDF -> Chroma -> Ollama RetrievalQA -> FastAPI /chat -> React chat
+PDF -> FastAPI /upload -> tarefa assíncrona -> Chroma -> RetrievalQA (Ollama) -> /chat -> React
 ```
 
-## Requirements
+## Requisitos
 
-- Python 3.11+ (tested on 3.13)
+- Python 3.11+ (testado em 3.13)
 - Node.js 18+
-- Ollama running locally with `llama3` downloaded (`ollama pull llama3`)
-- Git for version control/deployment
+- Ollama com o modelo `llama3` já baixado (`ollama pull llama3`)
+- Git
 
-## Environment variables
+## Variáveis de ambiente
 
-| Variable              | Purpose                                | Default                   |
-|-----------------------|----------------------------------------|---------------------------|
-| `FRONTEND_ORIGINS`    | Allowed CORS origins                    | `http://localhost:5173`   |
-| `UPLOAD_DIRECTORY`    | Folder for temporary PDFs               | `data`                    |
-| `CHROMA_DB_DIRECTORY` | Folder for Chroma persistence           | `db`                      |
-| `LOG_LEVEL`           | Logging level                           | `INFO`                    |
+| Variável | Função | Default |
+| --- | --- | --- |
+| `FRONTEND_ORIGINS` | Origens liberadas no CORS | `http://localhost:5173` |
+| `UPLOAD_DIRECTORY` | Pasta temporária dos PDFs | `data` |
+| `CHROMA_DB_DIRECTORY` | Persistência do Chroma | `db` |
+| `LOG_LEVEL` | Nível de log | `INFO` |
 
-## Backend setup
+## Backend
 
 ```powershell
 cd backend
@@ -41,14 +41,14 @@ pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-Endpoints:
-- `GET /` simple ping
-- `POST /upload/` saves the PDF and triggers background indexing
-- `GET /index-status/{filename}` returns `queued | processing | done | error`
-- `POST /chat/` expects a `query` form field and answers with sources
-- `GET /health` exposes readiness flags
+Rotas principais:
+- `GET /` – ping
+- `POST /upload/` – salva PDF e dispara indexação
+- `GET /index-status/{filename}` – `queued | processing | done | error`
+- `POST /chat/` – espera `query` e devolve resposta com fontes
+- `GET /health` – flags de prontidão
 
-## Frontend setup
+## Frontend
 
 ```powershell
 cd frontend
@@ -56,24 +56,23 @@ npm install
 npm run dev
 ```
 
-Open the URL Vite prints (default `http://localhost:5173`). Upload a PDF, wait until the status chip shows `done`, and then start asking questions. Build for production with `npm run build` and deploy the `dist/` folder.
+Abra o endereço mostrado pelo Vite (padrão `http://localhost:5173`). Faça upload, aguarde o chip mostrar `done` e pergunte. Para gerar build final, use `npm run build` e publique o conteúdo de `dist/`.
 
-## Code style highlights
+## Boas práticas em uso
 
-- Guard helpers ensure embeddings, Chroma and the QA chain exist before serving traffic.
-- Background indexing logs progress and surfaces errors through `/index-status`.
-- Source attribution always includes filename + page in the UI so answers are traceable.
-- The Tailwind theme relies on CSS variables for quick color adjustments and light/dark parity.
+- Helpers de prontidão bloqueiam chamadas se embeddings/Chroma/QA não estiverem carregados.
+- Indexação em background loga progresso e expõe erros via `/index-status`.
+- Cada resposta cita arquivo e página para rastreabilidade.
+- Tema baseado em variáveis CSS facilita ajustes de cor e compatibiliza modos claro/escuro.
 
-## Quick checks
+## Checks rápidos
 
 ```powershell
-# optional linters
+# opcionais
 pip install mypy ruff
 ruff check backend
 
-# frontend bundle
 npm run build
 ```
 
-The repository is already initialised locally—add a remote of your choice and push when ready.
+O repositório local já está pronto; defina o remoto que preferir e publique quando fizer sentido.
