@@ -1,47 +1,37 @@
 ﻿# Portal RAG
 
-Retrieval-Augmented Generation portal that lets users upload PDF documents, index them locally with Chroma, and chat with an Ollama-hosted LLM whose answers are grounded on the uploaded knowledge base.
+Portal RAG is a Retrieval-Augmented Generation workspace. Users upload PDFs, the backend indexes them with Chroma, and the chat UI asks Ollama for answers backed by those documents.
 
-The project is intentionally small and clean so it can serve as a template for future RAG initiatives. The backend follows FastAPI best practices with clear logging, guard clauses, and background jobs for indexing. The frontend uses Vite + React + Tailwind with a minimal, accessible UI.
+## Overview
 
-## Architecture
+- **Backend:** FastAPI + LangChain + Chroma, with Ollama (LLaMA 3) as the LLM.
+- **Frontend:** React + Vite + Tailwind, focused on a clean chat experience and clear source attribution.
+- **Data flow:**
+  1. PDF upload hits `/upload/` and is queued for background processing.
+  2. PyPDF splits text, embeddings are stored in Chroma on disk.
+  3. `/chat/` runs a RetrievalQA chain (top-5 chunks) and returns the answer plus file/page metadata.
 
 ```
-                    +-----------------------+
-Upload PDF  --->    |  FastAPI /upload      | --+--> Background task
-Ask question --->   |  FastAPI /chat        |   |    • PyPDF -> chunks
-                    +-----------+-----------+   |    • Chroma persistence
-                                |               |
-                                v               |
-                        HuggingFace Embeddings  |
-                                |               |
-                                v               |
-                            Chroma Vector DB <---
-                                |
-                                v
-                        RetrievalQA (Ollama LLaMA 3)
-                                |
-                                v
-                         Frontend Chat (React)
+PDF -> FastAPI /upload --background--> PyPDF -> Chroma -> Ollama RetrievalQA -> FastAPI /chat -> React chat
 ```
 
 ## Requirements
 
 - Python 3.11+ (tested on 3.13)
 - Node.js 18+
-- Ollama running locally with the `llama3` model pulled (`ollama pull llama3`)
-- Git (used for versioning / deployment)
+- Ollama running locally with `llama3` downloaded (`ollama pull llama3`)
+- Git for version control/deployment
 
 ## Environment variables
 
-| Name                | Description                                   | Default                     |
-|---------------------|-----------------------------------------------|-----------------------------|
-| `FRONTEND_ORIGINS`  | Comma-separated list of allowed CORS origins   | `http://localhost:5173`     |
-| `UPLOAD_DIRECTORY`  | Folder used to store uploaded PDFs             | `data`                      |
-| `CHROMA_DB_DIRECTORY` | Folder used to persist Chroma vectors        | `db`                        |
-| `LOG_LEVEL`         | Logging level (DEBUG, INFO, …)                | `INFO`                      |
+| Variable              | Purpose                                | Default                   |
+|-----------------------|----------------------------------------|---------------------------|
+| `FRONTEND_ORIGINS`    | Allowed CORS origins                    | `http://localhost:5173`   |
+| `UPLOAD_DIRECTORY`    | Folder for temporary PDFs               | `data`                    |
+| `CHROMA_DB_DIRECTORY` | Folder for Chroma persistence           | `db`                      |
+| `LOG_LEVEL`           | Logging level                           | `INFO`                    |
 
-## Backend (FastAPI)
+## Backend setup
 
 ```powershell
 cd backend
@@ -51,15 +41,14 @@ pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-Key endpoints:
+Endpoints:
+- `GET /` simple ping
+- `POST /upload/` saves the PDF and triggers background indexing
+- `GET /index-status/{filename}` returns `queued | processing | done | error`
+- `POST /chat/` expects a `query` form field and answers with sources
+- `GET /health` exposes readiness flags
 
-- `GET /` – health ping.
-- `POST /upload/` – accepts a single PDF, writes it to disk, and dispatches indexing in the background.
-- `GET /index-status/{filename}` – returns `queued | processing | done | error` plus optional error detail.
-- `POST /chat/` – expects `query` form field; responds with grounded answer + per-document metadata.
-- `GET /health` – exposes readiness flags for observability.
-
-## Frontend (React + Vite + Tailwind)
+## Frontend setup
 
 ```powershell
 cd frontend
@@ -67,31 +56,24 @@ npm install
 npm run dev
 ```
 
-Vite prints the URL it is using (e.g., `http://localhost:5173`). Open it in the browser, upload a PDF, and start asking questions once the status chip reaches `done`.
+Open the URL Vite prints (default `http://localhost:5173`). Upload a PDF, wait until the status chip shows `done`, and then start asking questions. Build for production with `npm run build` and deploy the `dist/` folder.
 
-To produce a production build run `npm run build` and deploy everything under `frontend/dist/`.
+## Code style highlights
 
-## Clean code highlights
+- Guard helpers ensure embeddings, Chroma and the QA chain exist before serving traffic.
+- Background indexing logs progress and surfaces errors through `/index-status`.
+- Source attribution always includes filename + page in the UI so answers are traceable.
+- The Tailwind theme relies on CSS variables for quick color adjustments and light/dark parity.
 
-- Centralised logging and guard clauses for every expensive dependency (embeddings, vector store, QA chain).
-- Helper functions (`_require_runtime_ready`, `_require_chain_ready`) keep endpoints lean and expressive.
-- Background processing reports progress through the `/index-status` endpoint while protecting against race conditions.
-- Frontend exposes source attribution and a11y-friendly colours, plus shared CSS variables that allow future theme toggles.
-- `.gitignore` keeps caches, build artefacts, and local backups out of version control.
-
-## Verifying the stack
+## Quick checks
 
 ```powershell
-# Backend type-check / lint (optional but recommended)
+# optional linters
 pip install mypy ruff
 ruff check backend
 
-# Frontend bundling check
+# frontend bundle
 npm run build
 ```
 
-## Version control & GitHub
-
-The repository is already initialised locally; configure your preferred remote and push whenever you are ready.
-
-Happy building!
+The repository is already initialised locally—add a remote of your choice and push when ready.
