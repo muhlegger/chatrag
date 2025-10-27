@@ -74,5 +74,3 @@ ruff check backend
 
 npm run build
 ```
-
-O repositório local já está pronto; defina o remoto que preferir e publique quando fizer sentido.
