@@ -92,19 +92,6 @@ npm run build
 
 ## Version control & GitHub
 
-A local git repository has been initialised in this folder. To publish it on GitHub:
+The repository is already initialised locally; configure your preferred remote and push whenever you are ready.
 
-```powershell
-$git = "C:/Program Files (x86)/Microsoft Visual Studio/2019/BuildTools/Common7/IDE/CommonExtensions/Microsoft/TeamFoundation/Team Explorer/Git/cmd/git.exe"
-& $git branch -M main
-& $git remote add origin https://github.com/<your-user>/<repo-name>.git
-& $git add .
-& $git commit -m "feat: first public release"
-& $git push -u origin main
-```
-
-Replace the remote URL with your own repository. After the push completes, enable Actions/CI or Deploy workflows as desired.
-
----
-
-Happy building! If you need additional automation (CI, Docker, cloud deployment), feel free to ask.
+Happy building!
