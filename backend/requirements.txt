@@ -1,0 +1,19 @@
+fastapi
+uvicorn
+langchain
+langchain-community
+chromadb
+pypdf
+sentence-transformers
+python-multipart
+langchain-google-genai
+
+# fastapi
+# uvicorn[standard]
+# langchain
+# langchain-google-genai
+# langchain-community
+# chromadb
+# pypdf
+# sentence-transformers
+# python-multipart
