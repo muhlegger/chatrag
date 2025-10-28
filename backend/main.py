@@ -1,4 +1,4 @@
-"""Backend FastAPI do Portal RAG."""
+﻿"""Backend FastAPI do Portal RAG."""
 
 from __future__ import annotations
 
@@ -11,7 +11,16 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Literal, Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, UploadFile, HTTPException, status
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    UploadFile,
+    HTTPException,
+    status,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -35,12 +44,14 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "120"))
 USERS_DB_PATH = Path(os.getenv("USERS_DB_PATH", "users.json"))
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 # --- Estruturas globais ---
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+logging.basicConfig(
+    level=LOG_LEVEL, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+)
 logger = logging.getLogger("portal-rag")
 
 UPLOAD_ROOT = Path(os.getenv("UPLOAD_DIRECTORY", "data"))
@@ -54,6 +65,7 @@ index_status: Dict[str, Dict[str, StatusLiteral]] = defaultdict(dict)
 index_errors: Dict[str, Dict[str, str]] = defaultdict(dict)
 
 # --- Modelos Pydantic ---
+
 
 class UserCreate(BaseModel):
     email: EmailStr
@@ -70,6 +82,7 @@ class AuthResponse(BaseModel):
 
 
 # --- Funções de persistência de usuários ---
+
 
 def _load_users() -> Dict[str, Dict[str, str]]:
     if USERS_DB_PATH.exists():
@@ -108,7 +121,9 @@ def authenticate_user(email: str, password: str) -> Optional[Dict[str, str]]:
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    expire = datetime.utcnow() + (
+        expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -195,7 +210,9 @@ def get_qa_chain_for_user(user_slug: str) -> Optional[RetrievalQA]:
     if vectordb is None:
         qa_chain_cache[user_slug] = None
         return None
-    prompt = PromptTemplate(template=PROMPT_TEMPLATE, input_variables=["context", "question"])
+    prompt = PromptTemplate(
+        template=PROMPT_TEMPLATE, input_variables=["context", "question"]
+    )
     retriever = vectordb.as_retriever(search_kwargs={"k": 5})
     qa_chain_cache[user_slug] = RetrievalQA.from_chain_type(
         Ollama(model="llama3.1:8b", base_url="http://127.0.0.1:11434", temperature=0.2),
@@ -212,7 +229,9 @@ def get_qa_chain_for_user(user_slug: str) -> Optional[RetrievalQA]:
 embeddings = None
 try:
     logger.info("Carregando embeddings sentence-transformers")
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    )
 except Exception as exc:
     logger.exception("Falha ao carregar embeddings: %s", exc)
 
@@ -222,7 +241,11 @@ app = FastAPI(
     version="3.0.0",
 )
 
-frontend_origins = [origin.strip() for origin in os.getenv("FRONTEND_ORIGINS", "http://localhost:5173").split(",") if origin.strip()]
+frontend_origins = [
+    origin.strip()
+    for origin in os.getenv("FRONTEND_ORIGINS", "http://localhost:5173").split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=frontend_origins,
@@ -238,8 +261,15 @@ async def register_user(payload: UserCreate) -> AuthResponse:
     email = payload.email.lower()
     if email in users:
         raise HTTPException(status_code=400, detail="E-mail já cadastrado.")
+
+    password = payload.password
+    if len(password) < 8 or len(password) > 128:
+        raise HTTPException(
+            status_code=400, detail="Senha deve ter entre 8 e 128 caracteres."
+        )
+
     users[email] = {
-        "hashed_password": get_password_hash(payload.password),
+        "hashed_password": get_password_hash(password),
         "created_at": datetime.utcnow().isoformat(),
     }
     _save_users(users)
@@ -251,7 +281,7 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()) -> Token:
     email = form_data.username.lower()
     user = authenticate_user(email, form_data.password)
     if user is None:
-        raise HTTPException(status_code=401, detail="Credenciais inválidas." )
+        raise HTTPException(status_code=401, detail="Credenciais inválidas.")
     access_token = create_access_token({"sub": email})
     return Token(access_token=access_token, token_type="bearer")
 
@@ -263,7 +293,9 @@ async def root() -> Dict[str, str]:
 
 def _ensure_ready(component: Optional[object], name: str) -> Optional[JSONResponse]:
     if component is None:
-        return JSONResponse(status_code=503, content={"error": f"{name} nao inicializado."})
+        return JSONResponse(
+            status_code=503, content={"error": f"{name} nao inicializado."}
+        )
     return None
 
 
@@ -271,7 +303,9 @@ async def _require_runtime_ready(user_slug: str) -> Optional[JSONResponse]:
     if resp := _ensure_ready(embeddings, "Embeddings"):  # noqa: SIM108
         return resp
     if get_vectordb_for_user(user_slug) is None:
-        return JSONResponse(status_code=503, content={"error": "Base vetorial indisponivel."})
+        return JSONResponse(
+            status_code=503, content={"error": "Base vetorial indisponivel."}
+        )
     return None
 
 
@@ -279,7 +313,9 @@ async def _require_chain_ready(user_slug: str) -> Optional[JSONResponse]:
     if resp := await _require_runtime_ready(user_slug):
         return resp
     if get_qa_chain_for_user(user_slug) is None:
-        return JSONResponse(status_code=503, content={"error": "Cadeia RAG indisponivel."})
+        return JSONResponse(
+            status_code=503, content={"error": "Cadeia RAG indisponivel."}
+        )
     return None
 
 
@@ -293,25 +329,38 @@ async def upload_file(
     if resp := await _require_runtime_ready(user_slug):
         return resp
     if not file.filename.lower().endswith(".pdf"):
-        return JSONResponse(status_code=400, content={"error": "Apenas PDFs sao aceitos."})
+        return JSONResponse(
+            status_code=400, content={"error": "Apenas PDFs sao aceitos."}
+        )
     if (file.content_type or "").lower() != "application/pdf":
-        return JSONResponse(status_code=400, content={"error": "Content-Type invalido para PDF."})
+        return JSONResponse(
+            status_code=400, content={"error": "Content-Type invalido para PDF."}
+        )
 
     upload_dir, _ = ensure_user_dirs(user_slug)
     file_path = upload_dir / file.filename
     try:
         payload = await file.read()
         if len(payload) < 10:
-            return JSONResponse(status_code=400, content={"error": "Arquivo vazio ou corrompido."})
+            return JSONResponse(
+                status_code=400, content={"error": "Arquivo vazio ou corrompido."}
+            )
         file_path.write_bytes(payload)
     except Exception as exc:
         logger.exception("Erro ao salvar arquivo enviado: %s", exc)
-        return JSONResponse(status_code=500, content={"error": "Nao foi possivel salvar o arquivo."})
+        return JSONResponse(
+            status_code=500, content={"error": "Nao foi possivel salvar o arquivo."}
+        )
 
     index_status[user_slug][file.filename] = "queued"
     index_errors[user_slug].pop(file.filename, None)
-    background_tasks.add_task(process_and_index_pdf, user_slug, file_path, file.filename)
-    return {"status": "ok", "message": f"Arquivo '{file.filename}' aguardando indexacao."}
+    background_tasks.add_task(
+        process_and_index_pdf, user_slug, file_path, file.filename
+    )
+    return {
+        "status": "ok",
+        "message": f"Arquivo '{file.filename}' aguardando indexacao.",
+    }
 
 
 @app.get("/index-status/{filename}", summary="Consultar status de indexacao")
@@ -322,7 +371,9 @@ async def index_status_endpoint(
     user_slug = slugify_user(current_user)
     status_value = index_status[user_slug].get(filename)
     if status_value is None:
-        return JSONResponse(status_code=404, content={"error": "Arquivo nao encontrado."})
+        return JSONResponse(
+            status_code=404, content={"error": "Arquivo nao encontrado."}
+        )
     return {
         "filename": filename,
         "status": status_value,
@@ -336,21 +387,27 @@ async def chat(
     current_user: str = Depends(get_current_user),
 ):
     if not query:
-        return JSONResponse(status_code=400, content={"error": "A pergunta nao pode ser vazia."})
+        return JSONResponse(
+            status_code=400, content={"error": "A pergunta nao pode ser vazia."}
+        )
     user_slug = slugify_user(current_user)
     if resp := await _require_chain_ready(user_slug):
         return resp
 
     chain = get_qa_chain_for_user(user_slug)
     if chain is None:
-        return JSONResponse(status_code=503, content={"error": "Cadeia RAG indisponivel."})
+        return JSONResponse(
+            status_code=503, content={"error": "Cadeia RAG indisponivel."}
+        )
 
     logger.info("Pergunta recebida de %s: %s", current_user, query)
     try:
         result = chain.invoke({"query": query})
     except Exception as exc:
         logger.exception("Falha na cadeia RAG: %s", exc)
-        return JSONResponse(status_code=500, content={"error": "Erro ao consultar o LLM."})
+        return JSONResponse(
+            status_code=500, content={"error": "Erro ao consultar o LLM."}
+        )
 
     answer = result.get("result", "Nao foi possivel gerar resposta.")
     sources_payload: List[Dict[str, Optional[int]]] = []
@@ -378,7 +435,9 @@ async def health() -> Dict[str, object]:
 
 
 def process_and_index_pdf(user_slug: str, file_path: Path, filename: str) -> None:
-    logger.info("Inicio da indexacao em segundo plano para %s (%s)", filename, user_slug)
+    logger.info(
+        "Inicio da indexacao em segundo plano para %s (%s)", filename, user_slug
+    )
     vectordb = get_vectordb_for_user(user_slug)
     if vectordb is None:
         index_status[user_slug][filename] = "error"
@@ -405,4 +464,6 @@ def process_and_index_pdf(user_slug: str, file_path: Path, filename: str) -> Non
             if index_status[user_slug].get(filename) == "done":
                 file_path.unlink(missing_ok=True)
         except Exception as cleanup_exc:
-            logger.warning("Falha ao remover arquivo temporario %s: %s", file_path, cleanup_exc)
+            logger.warning(
+                "Falha ao remover arquivo temporario %s: %s", file_path, cleanup_exc
+            )
