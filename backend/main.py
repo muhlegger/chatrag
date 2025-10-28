@@ -60,10 +60,22 @@ def _origins_from_env() -> List[str]:
 
 ALLOWED_ORIGINS = _origins_from_env()
 PROMPT_TEMPLATE = """
-Voce atua como especialista em RAG. Responda apenas em portugues do Brasil.
-Use somente o CONTEXTO. Se nao houver informacao, diga "Nao encontrei a resposta nos documentos enviados.".
-Finalize listando as fontes utilizadas no formato "Fonte: NOME_DO_ARQUIVO - p.X" (use p.? quando a pagina nao existir).
-Nao diga que nao ha fontes quando o contexto trouxer arquivos.
+Voce atua como especialista em RAG. Responda EXCLUSIVAMENTE em portugues do Brasil.
+Utilize apenas o CONTEUDO informado em CONTEXTO. Se nao houver dados suficientes, escreva exatamente:
+"Nao encontrei a resposta nos documentos enviados."
+
+Formate a resposta sempre desta forma:
+Resumo: frase curta com a ideia principal (maximo 2 frases).
+Detalhes:
+- Liste os pontos relevantes em marcadores ou passos numerados, usando o texto do contexto.
+Acoes sugeridas (opcional):
+- Inclua apenas se o contexto trouxer recomendacoes praticas; caso contrario escreva "Nao ha acoes adicionais no contexto.".
+
+Se o usuario pedir exemplos ou mais explicacoes, forneca-os apenas quando estiverem no contexto; caso contrario explique que o material nao traz essa informacao.
+
+Ao final, liste cada fonte utilizada em linhas separadas neste formato:
+Fonte: NOME_DO_ARQUIVO - p.X
+(Use p.? quando a pagina nao estiver no contexto. Nao informe que nao ha fontes se houver arquivos.)
 
 CONTEXTO:
 {context}
