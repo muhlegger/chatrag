@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 
 type SourceMeta = { source: string; page?: number };
 type IndexStatus = "idle" | "queued" | "processing" | "done" | "error";
-type Msg = { sender: "user" | "bot"; text: string; sources?: SourceMeta[] };
+type Msg = { sender: "user" | "bot"; text: string };
 
 const API_BASE = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000";
 const STATUS_LABEL: Record<Exclude<IndexStatus, "idle">, string> = {
@@ -35,13 +35,6 @@ async function apiAsk(query: string) {
 const normalizeSources = (s?: Array<string | SourceMeta>): SourceMeta[] =>
   (s ?? []).map(x => (typeof x === "string" ? { source: x } : x));
 
-function Chip({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="inline-flex items-center rounded-full px-3 py-1 text-xs font-medium bg-[var(--chip-bg)] border border-[var(--chip-border)] text-[var(--text-muted)]">
-      {children}
-    </span>
-  );
-}
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)]">{children}</div>;
 }
@@ -49,6 +42,12 @@ const formatSourceLine = (src: SourceMeta) => {
   const filename = src.source?.split(/[\\/]/).pop() || "documento";
   const page = typeof src.page === "number" ? `p.${src.page + 1}` : "p.?";
   return `${filename} - ${page}`;
+};
+const composeAnswer = (answer: string, sources: SourceMeta[]) => {
+  const trimmed = answer.trim();
+  if (!sources.length) return trimmed;
+  const list = sources.map((s, idx) => `- ${formatSourceLine(s)}`).join("\n");
+  return `${trimmed}\n\nFontes:\n${list}`;
 };
 
 export default function App() {
@@ -105,7 +104,9 @@ export default function App() {
     setBusy(true);
     try {
       const r = await apiAsk(q);
-      setMessages(prev => [...prev, { sender: "bot", text: r.answer ?? "-", sources: normalizeSources(r.sources) }]);
+      const sources = normalizeSources(r.sources);
+      const answerWithSources = composeAnswer(r.answer ?? "-", sources);
+      setMessages(prev => [...prev, { sender: "bot", text: answerWithSources }]);
     } catch {
       setMessages(prev => [...prev, { sender: "bot", text: "Falha ao buscar resposta." }]);
     } finally {
@@ -168,7 +169,7 @@ export default function App() {
               {file && (
                 <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-[var(--border)] bg-[var(--surface-muted)] px-4 py-2">
                   <span className="text-sm font-medium text-[var(--text)] truncate max-w-full sm:max-w-[240px]">{file.name}</span>
-                  {fileStatus && fileStatus !== "idle" && <Chip>status: {STATUS_LABEL[fileStatus] ?? fileStatus}</Chip>}
+                  {fileStatus && fileStatus !== "idle" && <span className="inline-flex items-center rounded-full px-3 py-1 text-xs font-medium bg-[var(--chip-bg)] border border-[var(--chip-border)] text-[var(--text-muted)]">status: {STATUS_LABEL[fileStatus] ?? fileStatus}</span>}
                 </div>
               )}
             </div>
@@ -183,35 +184,25 @@ export default function App() {
                 </div>
               )}
 
-              {messages.map((m, i) => {
-                if (m.sender === "user") {
-                  return (
-                    <motion.div key={i} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="flex justify-end">
-                      <div className="bg-gradient-to-r from-[var(--primary)] to-[var(--primary-strong)] text-white max-w-[80%] rounded-2xl px-4 py-3 shadow-sm">
-                        <div className="whitespace-pre-wrap">{m.text}</div>
-                      </div>
-                    </motion.div>
-                  );
-                }
-                return (
-                  <motion.div key={i} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="flex items-start gap-3">
+              {messages.map((m, i) => (
+                <motion.div
+                  key={i}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className={`flex ${m.sender === "user" ? "justify-end" : "items-start gap-3"}`}
+                >
+                  {m.sender === "bot" && (
                     <div className="w-9 h-9 rounded-full bg-[var(--assistant-icon-bg)] text-[var(--assistant-icon-fg)] grid place-items-center shadow-soft">AI</div>
-                    <div className="bg-[var(--surface)] border border-[var(--border)] text-[var(--text)] max-w-[80%] rounded-2xl px-4 py-3 shadow-sm">
-                      <div className="whitespace-pre-wrap">{m.text}</div>
-                      {m.sources?.length ? (
-                        <div className="mt-3 space-y-1 text-xs text-[var(--text-muted)]">
-                          {m.sources.map((s, idx) => (
-                            <div key={idx} className="flex flex-wrap gap-1">
-                              <span className="font-medium text-[var(--text)]">Fonte {idx + 1}:</span>
-                              <span>{formatSourceLine(s)}</span>
-                            </div>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  </motion.div>
-                );
-              })}
+                  )}
+                  <div
+                    className={`${m.sender === "user"
+                      ? "bg-gradient-to-r from-[var(--primary)] to-[var(--primary-strong)] text-white ml-auto"
+                      : "bg-[var(--surface)] border border-[var(--border)] text-[var(--text)]"} max-w-[80%] rounded-2xl px-4 py-3 shadow-sm whitespace-pre-wrap`}
+                  >
+                    {m.text}
+                  </div>
+                </motion.div>
+              ))}
             </div>
 
             <div className="border-t border-[var(--border)] p-3 flex gap-3 bg-[var(--surface)] rounded-b-xl">
@@ -240,4 +231,3 @@ export default function App() {
     </div>
   );
 }
-

@@ -73,9 +73,7 @@ Acoes sugeridas (opcional):
 
 Se o usuario pedir exemplos ou mais explicacoes, forneca-os apenas quando estiverem no contexto; caso contrario explique que o material nao traz essa informacao.
 
-Ao final, liste cada fonte utilizada em linhas separadas neste formato:
-Fonte: NOME_DO_ARQUIVO - p.X
-(Use p.? quando a pagina nao estiver no contexto. Nao informe que nao ha fontes se houver arquivos.)
+Nao escreva linhas iniciando com "Fonte:". As referencias serao adicionadas externamente, entao nao inclua secao de fontes na resposta.
 
 CONTEXTO:
 {context}
