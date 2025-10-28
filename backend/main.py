@@ -1,64 +1,142 @@
-﻿"""Portal RAG FastAPI backend."""
+"""Backend FastAPI do Portal RAG."""
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
+from collections import defaultdict
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Literal, Optional
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, UploadFile, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from pydantic import BaseModel, EmailStr
+
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.llms import Ollama
+from langchain_community.vectorstores import Chroma
+from langchain.chains import RetrievalQA
+from langchain.prompts import PromptTemplate
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 StatusLiteral = Literal["queued", "processing", "done", "error"]
 
-IMPORT_OK = True
-IMPORT_ERR = None
-try:  # pragma: no cover
-    from langchain_community.document_loaders import PyPDFLoader
-    from langchain_community.embeddings import HuggingFaceEmbeddings
-    from langchain_community.llms import Ollama
-    from langchain_community.vectorstores import Chroma
-    from langchain.chains import RetrievalQA
-    from langchain.prompts import PromptTemplate
-    from langchain.text_splitter import RecursiveCharacterTextSplitter
-except ModuleNotFoundError as exc:  # pragma: no cover
-    IMPORT_OK = False
-    IMPORT_ERR = str(exc)
-    try:
-        from langchain.document_loaders import PyPDFLoader  # type: ignore
-        from langchain.embeddings import HuggingFaceEmbeddings  # type: ignore
-        from langchain.llms import Ollama  # type: ignore
-        from langchain.vectorstores import Chroma  # type: ignore
-        from langchain.chains import RetrievalQA
-        from langchain.prompts import PromptTemplate
-        from langchain.text_splitter import RecursiveCharacterTextSplitter
+# --- Configurações de autenticação ---
+SECRET_KEY = os.getenv("SECRET_KEY", "change-me")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "120"))
+USERS_DB_PATH = Path(os.getenv("USERS_DB_PATH", "users.json"))
 
-        IMPORT_OK = True
-        IMPORT_ERR = None
-    except Exception as fallback_exc:  # pragma: no cover
-        IMPORT_ERR = f"{IMPORT_ERR}; fallback failed: {fallback_exc}"
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
+# --- Estruturas globais ---
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(
-    level=LOG_LEVEL,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-)
+logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 logger = logging.getLogger("portal-rag")
 
-UPLOAD_DIR = Path(os.getenv("UPLOAD_DIRECTORY", "data"))
-VECTOR_DB_DIR = Path(os.getenv("CHROMA_DB_DIRECTORY", "db"))
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-VECTOR_DB_DIR.mkdir(parents=True, exist_ok=True)
+UPLOAD_ROOT = Path(os.getenv("UPLOAD_DIRECTORY", "data"))
+VECTOR_DB_ROOT = Path(os.getenv("CHROMA_DB_DIRECTORY", "db"))
+UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+VECTOR_DB_ROOT.mkdir(parents=True, exist_ok=True)
+
+vector_store_cache: Dict[str, Optional[Chroma]] = {}
+qa_chain_cache: Dict[str, Optional[RetrievalQA]] = {}
+index_status: Dict[str, Dict[str, StatusLiteral]] = defaultdict(dict)
+index_errors: Dict[str, Dict[str, str]] = defaultdict(dict)
+
+# --- Modelos Pydantic ---
+
+class UserCreate(BaseModel):
+    email: EmailStr
+    password: str
 
 
-def _origins_from_env() -> List[str]:
-    raw = os.getenv("FRONTEND_ORIGINS", "http://localhost:5173")
-    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+class Token(BaseModel):
+    access_token: str
+    token_type: str
 
 
-ALLOWED_ORIGINS = _origins_from_env()
+class AuthResponse(BaseModel):
+    message: str
+
+
+# --- Funções de persistência de usuários ---
+
+def _load_users() -> Dict[str, Dict[str, str]]:
+    if USERS_DB_PATH.exists():
+        try:
+            return json.loads(USERS_DB_PATH.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            logger.warning("Arquivo de usuarios corrompido; reiniciando banco.")
+    return {}
+
+
+def _save_users(users: Dict[str, Dict[str, str]]) -> None:
+    USERS_DB_PATH.write_text(json.dumps(users, indent=2), encoding="utf-8")
+
+
+def _get_user(email: str) -> Optional[Dict[str, str]]:
+    users = _load_users()
+    return users.get(email)
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def get_password_hash(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def authenticate_user(email: str, password: str) -> Optional[Dict[str, str]]:
+    user = _get_user(email)
+    if user is None:
+        return None
+    if not verify_password(password, user["hashed_password"]):
+        return None
+    return user
+
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def slugify_user(email: str) -> str:
+    return re.sub(r"[^a-z0-9_-]", "_", email.lower())
+
+
+async def get_current_user(token: str = Depends(oauth2_scheme)) -> str:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Credenciais inválidas.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: Optional[str] = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception from None
+    if _get_user(email.lower()) is None:
+        raise credentials_exception
+    return email.lower()
+
+
+# --- Funções auxiliares de armazenamento vetorial ---
+
 PROMPT_TEMPLATE = """
 Voce atua como especialista em RAG. Responda EXCLUSIVAMENTE em portugues do Brasil.
 Utilize apenas o CONTEUDO informado em CONTEXTO. Se nao houver dados suficientes, escreva exatamente:
@@ -85,170 +163,201 @@ RESPOSTA:
 """
 
 
-def build_embeddings() -> Optional[HuggingFaceEmbeddings]:  # type: ignore[name-defined]
-    if not IMPORT_OK:
-        logger.warning("LangChain dependencies missing: %s", IMPORT_ERR)
-        return None
-    try:
-        logger.info("Loading sentence-transformers embeddings")
-        return HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2"
-        )
-    except Exception as exc:
-        logger.exception("Could not load embeddings: %s", exc)
-        return None
+def ensure_user_dirs(user_slug: str) -> tuple[Path, Path]:
+    upload_dir = UPLOAD_ROOT / user_slug
+    vectordb_dir = VECTOR_DB_ROOT / user_slug
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    vectordb_dir.mkdir(parents=True, exist_ok=True)
+    return upload_dir, vectordb_dir
 
 
-def build_vectorstore(embeddings: Optional[HuggingFaceEmbeddings]):  # type: ignore[name-defined]
+def get_vectordb_for_user(user_slug: str) -> Optional[Chroma]:
+    if user_slug in vector_store_cache:
+        return vector_store_cache[user_slug]
     if embeddings is None:
         return None
-    try:
-        logger.info("Connecting to Chroma vector store at %s", VECTOR_DB_DIR)
-        return Chroma(
-            persist_directory=str(VECTOR_DB_DIR), embedding_function=embeddings
-        )
-    except Exception as exc:
-        logger.exception("Could not initialise vector store: %s", exc)
-        return None
-
-
-def build_qa_chain(vectorstore):
-    if vectorstore is None:
-        return None
-    prompt = PromptTemplate(
-        template=PROMPT_TEMPLATE, input_variables=["context", "question"]
+    _, vectordb_dir = ensure_user_dirs(user_slug)
+    vector_store_cache[user_slug] = Chroma(
+        persist_directory=str(vectordb_dir),
+        embedding_function=embeddings,
     )
-    try:
-        retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
-        return RetrievalQA.from_chain_type(
-            Ollama(model="llama3", base_url="http://127.0.0.1:11434", temperature=0.2),
-            retriever=retriever,
-            chain_type="stuff",
-            chain_type_kwargs={"prompt": prompt},
-            return_source_documents=True,
-        )
-    except Exception as exc:
-        logger.exception("Could not build QA chain: %s", exc)
+    return vector_store_cache[user_slug]
+
+
+def reset_user_chain(user_slug: str) -> None:
+    qa_chain_cache.pop(user_slug, None)
+
+
+def get_qa_chain_for_user(user_slug: str) -> Optional[RetrievalQA]:
+    if user_slug in qa_chain_cache:
+        return qa_chain_cache[user_slug]
+    vectordb = get_vectordb_for_user(user_slug)
+    if vectordb is None:
+        qa_chain_cache[user_slug] = None
         return None
+    prompt = PromptTemplate(template=PROMPT_TEMPLATE, input_variables=["context", "question"])
+    retriever = vectordb.as_retriever(search_kwargs={"k": 5})
+    qa_chain_cache[user_slug] = RetrievalQA.from_chain_type(
+        Ollama(model="llama3.1:8b", base_url="http://127.0.0.1:11434", temperature=0.2),
+        retriever=retriever,
+        chain_type="stuff",
+        chain_type_kwargs={"prompt": prompt},
+        return_source_documents=True,
+    )
+    return qa_chain_cache[user_slug]
 
 
-embeddings = build_embeddings()
-vectordb = build_vectorstore(embeddings)
-qa_chain = build_qa_chain(vectordb)
+# --- Inicialização de embeddings ---
+
+embeddings = None
+try:
+    logger.info("Carregando embeddings sentence-transformers")
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+except Exception as exc:
+    logger.exception("Falha ao carregar embeddings: %s", exc)
 
 app = FastAPI(
     title="Portal RAG API",
-    description="Upload PDFs and query an Ollama-powered RAG pipeline.",
-    version="2.0.0",
+    description="Envie PDFs e consulte respostas ancoradas em contexto local com Ollama.",
+    version="3.0.0",
 )
+
+frontend_origins = [origin.strip() for origin in os.getenv("FRONTEND_ORIGINS", "http://localhost:5173").split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=frontend_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-@app.get("/", summary="Service status")
-async def root():
-    """Simple ping endpoint used by monitors."""
-    return {"status": "ok", "message": "Portal RAG backend is running."}
+@app.post("/auth/register", status_code=201, response_model=AuthResponse)
+async def register_user(payload: UserCreate) -> AuthResponse:
+    users = _load_users()
+    email = payload.email.lower()
+    if email in users:
+        raise HTTPException(status_code=400, detail="E-mail já cadastrado.")
+    users[email] = {
+        "hashed_password": get_password_hash(payload.password),
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    _save_users(users)
+    return AuthResponse(message="Usuário criado com sucesso.")
 
 
-index_status: Dict[str, StatusLiteral] = {}
-index_errors: Dict[str, str] = {}
+@app.post("/auth/login", response_model=Token)
+async def login(form_data: OAuth2PasswordRequestForm = Depends()) -> Token:
+    email = form_data.username.lower()
+    user = authenticate_user(email, form_data.password)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Credenciais inválidas." )
+    access_token = create_access_token({"sub": email})
+    return Token(access_token=access_token, token_type="bearer")
+
+
+@app.get("/", summary="Status da API")
+async def root() -> Dict[str, str]:
+    return {"status": "ok", "message": "Backend Portal RAG ativo."}
 
 
 def _ensure_ready(component: Optional[object], name: str) -> Optional[JSONResponse]:
-    """Return a 503 JSON response if a runtime dependency has not been initialised."""
     if component is None:
-        return JSONResponse(
-            status_code=503, content={"error": f"{name} is not initialised."}
-        )
+        return JSONResponse(status_code=503, content={"error": f"{name} nao inicializado."})
     return None
 
 
-async def _require_runtime_ready() -> Optional[JSONResponse]:
+async def _require_runtime_ready(user_slug: str) -> Optional[JSONResponse]:
     if resp := _ensure_ready(embeddings, "Embeddings"):  # noqa: SIM108
         return resp
-    if resp := _ensure_ready(vectordb, "Vector store"):
-        return resp
+    if get_vectordb_for_user(user_slug) is None:
+        return JSONResponse(status_code=503, content={"error": "Base vetorial indisponivel."})
     return None
 
 
-async def _require_chain_ready() -> Optional[JSONResponse]:
-    base_check = await _require_runtime_ready()
-    if base_check is not None:
-        return base_check
-    if resp := _ensure_ready(qa_chain, "Retrieval QA chain"):
+async def _require_chain_ready(user_slug: str) -> Optional[JSONResponse]:
+    if resp := await _require_runtime_ready(user_slug):
         return resp
+    if get_qa_chain_for_user(user_slug) is None:
+        return JSONResponse(status_code=503, content={"error": "Cadeia RAG indisponivel."})
     return None
 
 
-@app.post("/upload/", summary="Upload & index a PDF")
-async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
-    if resp := await _require_runtime_ready():
+@app.post("/upload/", summary="Enviar e indexar PDF")
+async def upload_file(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    current_user: str = Depends(get_current_user),
+):
+    user_slug = slugify_user(current_user)
+    if resp := await _require_runtime_ready(user_slug):
         return resp
     if not file.filename.lower().endswith(".pdf"):
-        return JSONResponse(
-            status_code=400, content={"error": "Only PDF files are supported."}
-        )
+        return JSONResponse(status_code=400, content={"error": "Apenas PDFs sao aceitos."})
     if (file.content_type or "").lower() != "application/pdf":
-        return JSONResponse(
-            status_code=400, content={"error": "Invalid content type for PDF."}
-        )
+        return JSONResponse(status_code=400, content={"error": "Content-Type invalido para PDF."})
 
-    file_path = UPLOAD_DIR / file.filename
+    upload_dir, _ = ensure_user_dirs(user_slug)
+    file_path = upload_dir / file.filename
     try:
         payload = await file.read()
         if len(payload) < 10:
-            return JSONResponse(
-                status_code=400, content={"error": "Empty or corrupted file."}
-            )
+            return JSONResponse(status_code=400, content={"error": "Arquivo vazio ou corrompido."})
         file_path.write_bytes(payload)
     except Exception as exc:
-        logger.exception("Failed to persist uploaded file: %s", exc)
-        return JSONResponse(status_code=500, content={"error": "Could not save file."})
+        logger.exception("Erro ao salvar arquivo enviado: %s", exc)
+        return JSONResponse(status_code=500, content={"error": "Nao foi possivel salvar o arquivo."})
 
-    index_status[file.filename] = "queued"
-    index_errors.pop(file.filename, None)
-    background_tasks.add_task(process_and_index_pdf, file_path, file.filename)
-    return {"status": "ok", "message": f"File '{file.filename}' queued for processing."}
+    index_status[user_slug][file.filename] = "queued"
+    index_errors[user_slug].pop(file.filename, None)
+    background_tasks.add_task(process_and_index_pdf, user_slug, file_path, file.filename)
+    return {"status": "ok", "message": f"Arquivo '{file.filename}' aguardando indexacao."}
 
 
-@app.get("/index-status/{filename}", summary="Check indexing status")
-async def index_status_endpoint(filename: str):
-    status = index_status.get(filename)
-    if status is None:
-        return JSONResponse(status_code=404, content={"error": "File not found."})
+@app.get("/index-status/{filename}", summary="Consultar status de indexacao")
+async def index_status_endpoint(
+    filename: str,
+    current_user: str = Depends(get_current_user),
+):
+    user_slug = slugify_user(current_user)
+    status_value = index_status[user_slug].get(filename)
+    if status_value is None:
+        return JSONResponse(status_code=404, content={"error": "Arquivo nao encontrado."})
     return {
         "filename": filename,
-        "status": status,
-        "detail": index_errors.get(filename),
+        "status": status_value,
+        "detail": index_errors[user_slug].get(filename),
     }
 
 
-@app.post("/chat/", summary="Ask a question against indexed PDFs")
-async def chat(query: str = Form(...)):
+@app.post("/chat/", summary="Consultar PDFs indexados")
+async def chat(
+    query: str = Form(...),
+    current_user: str = Depends(get_current_user),
+):
     if not query:
-        return JSONResponse(status_code=400, content={"error": "Query is required."})
-    if resp := await _require_chain_ready():
+        return JSONResponse(status_code=400, content={"error": "A pergunta nao pode ser vazia."})
+    user_slug = slugify_user(current_user)
+    if resp := await _require_chain_ready(user_slug):
         return resp
 
-    logger.info("Received question: %s", query)
-    try:
-        result = qa_chain.invoke({"query": query})  # type: ignore[union-attr]
-    except Exception as exc:
-        logger.exception("RAG pipeline failed: %s", exc)
-        return JSONResponse(status_code=500, content={"error": "LLM retrieval failed."})
+    chain = get_qa_chain_for_user(user_slug)
+    if chain is None:
+        return JSONResponse(status_code=503, content={"error": "Cadeia RAG indisponivel."})
 
-    answer = result.get("result", "No answer could be generated.")
-    sources_payload = []
+    logger.info("Pergunta recebida de %s: %s", current_user, query)
+    try:
+        result = chain.invoke({"query": query})
+    except Exception as exc:
+        logger.exception("Falha na cadeia RAG: %s", exc)
+        return JSONResponse(status_code=500, content={"error": "Erro ao consultar o LLM."})
+
+    answer = result.get("result", "Nao foi possivel gerar resposta.")
+    sources_payload: List[Dict[str, Optional[int]]] = []
     seen = set()
     for document in result.get("source_documents", []):
         meta = document.metadata or {}
-        src = meta.get("source", "unknown")
+        src = meta.get("source", "desconhecido")
         page = meta.get("page")
         key = (src, page)
         if key in seen:
@@ -259,25 +368,24 @@ async def chat(query: str = Form(...)):
     return {"answer": answer, "sources": sources_payload}
 
 
-@app.get("/health", summary="API health check")
-async def health():
+@app.get("/health", summary="Health check")
+async def health() -> Dict[str, object]:
     return {
         "status": "ok",
-        "langchain_ready": IMPORT_OK,
         "embeddings_loaded": embeddings is not None,
-        "vector_store_ready": vectordb is not None,
-        "qa_chain_ready": qa_chain is not None,
-        "allowed_origins": ALLOWED_ORIGINS,
+        "vector_caches": list(vector_store_cache.keys()),
     }
 
 
-def process_and_index_pdf(file_path: Path, filename: str):
-    logger.info("Starting background indexing for %s", filename)
+def process_and_index_pdf(user_slug: str, file_path: Path, filename: str) -> None:
+    logger.info("Inicio da indexacao em segundo plano para %s (%s)", filename, user_slug)
+    vectordb = get_vectordb_for_user(user_slug)
     if vectordb is None:
-        index_status[filename] = "error"
-        index_errors[filename] = "Vector store unavailable"
+        index_status[user_slug][filename] = "error"
+        index_errors[user_slug][filename] = "Base vetorial indisponivel"
         return
-    index_status[filename] = "processing"
+
+    index_status[user_slug][filename] = "processing"
     try:
         loader = PyPDFLoader(str(file_path))
         documents = loader.load()
@@ -285,15 +393,16 @@ def process_and_index_pdf(file_path: Path, filename: str):
         chunks = splitter.split_documents(documents)
         vectordb.add_documents(chunks)
         vectordb.persist()
-        index_status[filename] = "done"
-        logger.info("Indexed %s into %d chunks", filename, len(chunks))
+        index_status[user_slug][filename] = "done"
+        reset_user_chain(user_slug)
+        logger.info("Arquivo %s indexado em %d trechos", filename, len(chunks))
     except Exception as exc:
-        index_status[filename] = "error"
-        index_errors[filename] = str(exc)
-        logger.exception("Error while indexing %s: %s", filename, exc)
+        index_status[user_slug][filename] = "error"
+        index_errors[user_slug][filename] = str(exc)
+        logger.exception("Erro durante indexacao de %s: %s", filename, exc)
     finally:
         try:
-            if index_status.get(filename) == "done":
+            if index_status[user_slug].get(filename) == "done":
                 file_path.unlink(missing_ok=True)
         except Exception as cleanup_exc:
-            logger.warning("Could not remove temp file %s: %s", file_path, cleanup_exc)
+            logger.warning("Falha ao remover arquivo temporario %s: %s", file_path, cleanup_exc)

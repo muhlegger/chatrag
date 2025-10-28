@@ -7,6 +7,8 @@ pypdf
 sentence-transformers
 python-multipart
 langchain-google-genai
+passlib[bcrypt]
+python-jose[cryptography]
 
 # fastapi
 # uvicorn[standard]
