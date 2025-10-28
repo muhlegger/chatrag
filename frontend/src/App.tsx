@@ -113,12 +113,8 @@ const formatSourceLine = (src: SourceMeta) => {
 const composeAnswer = (answer: string, sources: SourceMeta[]) => {
   const trimmed = answer.trim();
   if (!sources.length) return trimmed;
-  const list = sources.map(s => `- ${formatSourceLine(s)}`).join("
-");
-  return `${trimmed}
-
-Fontes:
-${list}`;
+  const list = sources.map(s => `- ${formatSourceLine(s)}`).join("\n");
+  return `${trimmed}\n\nFontes:\n${list}`;
 };
 
 function AuthView({
