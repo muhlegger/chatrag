@@ -153,20 +153,33 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> str:
 # --- Funções auxiliares de armazenamento vetorial ---
 
 PROMPT_TEMPLATE = """
-Voce atua como especialista em RAG. Responda EXCLUSIVAMENTE em portugues do Brasil.
-Utilize apenas o CONTEUDO informado em CONTEXTO. Se nao houver dados suficientes, escreva exatamente:
+Voce atua como um especialista em RAG. Responda EXCLUSIVAMENTE em portugues do Brasil.
+
+Sua tarefa e construir respostas completas, detalhadas e fundamentadas, usando SOMENTE o CONTEUDO informado em CONTEXTO.
+Jamais use conhecimento externo.
+
+Caso o contexto nao traga informacoes suficientes, escreva exatamente:
 "Nao encontrei a resposta nos documentos enviados."
 
-Formate a resposta sempre desta forma:
-Resumo: frase curta com a ideia principal (maximo 2 frases).
-Detalhes:
-- Liste os pontos relevantes em marcadores ou passos numerados, usando o texto do contexto.
-Acoes sugeridas (opcional):
-- Inclua apenas se o contexto trouxer recomendacoes praticas; caso contrario escreva "Nao ha acoes adicionais no contexto.".
+Siga este formato de resposta:
 
-Se o usuario pedir exemplos ou mais explicacoes, forneca-os apenas quando estiverem no contexto; caso contrario explique que o material nao traz essa informacao.
+Resumo:
+- Produza 1 ou 2 frases que resumam o ponto central.
 
-Nao escreva linhas iniciando com "Fonte:". As referencias serao adicionadas externamente, entao nao inclua secao de fontes na resposta.
+Explicacao aprofundada:
+- Organize o material em blocos ou subtitulos, quando fizer sentido.
+- Para cada tema importante, redija paragrafos com pelo menos 3 frases, explorando o maximo de detalhes do contexto.
+- Inclua listas numeradas ou hierarquicas (1., 1.1, etc.) sempre que o contexto trouxer classificacoes, etapas, sintomas, sinais, criterios, escalas, dados temporais ou estatisticos.
+- Transcreva valores numericos, medidas, faixas etarias, frequencias e exemplos concretos.
+- Se o contexto mencionar tabelas ou quadros, traduza os principais itens em texto corrido ou listas legiveis.
+- Aponte relacoes causais, condicoes associadas e comparacoes mencionadas.
+- Se houver lacunas ou hipoteses no contexto, registre-as explicitamente.
+
+Acoes ou implicacoes praticas:
+- Liste recomendacoes, condutas, orientacoes, riscos ou consequencias clinicas descritas.
+- Se nao houver orientacoes no contexto, escreva "Nao ha acoes adicionais no contexto."
+
+Nao repita frases desnecessarias, nao adicione "Fontes:" e nao use conhecimento externo.
 
 CONTEXTO:
 {context}
@@ -176,6 +189,7 @@ PERGUNTA:
 
 RESPOSTA:
 """
+
 
 
 def ensure_user_dirs(user_slug: str) -> tuple[Path, Path]:
@@ -213,7 +227,7 @@ def get_qa_chain_for_user(user_slug: str) -> Optional[RetrievalQA]:
     prompt = PromptTemplate(
         template=PROMPT_TEMPLATE, input_variables=["context", "question"]
     )
-    retriever = vectordb.as_retriever(search_kwargs={"k": 5})
+    retriever = vectordb.as_retriever(search_kwargs={"k": 8})
     qa_chain_cache[user_slug] = RetrievalQA.from_chain_type(
         Ollama(model="llama3.1:8b", base_url="http://127.0.0.1:11434", temperature=0.2),
         retriever=retriever,
