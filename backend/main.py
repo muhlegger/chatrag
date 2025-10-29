@@ -32,7 +32,7 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.llms import Ollama
 from langchain_community.vectorstores import Chroma
-from langchain_classic.chains import RetrievalQA
+from langchain.chains import RetrievalQA
 from langchain_core.prompts import PromptTemplate
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -155,7 +155,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> str:
 PROMPT_TEMPLATE = """
 Voce atua como um especialista em RAG. Responda EXCLUSIVAMENTE em portugues do Brasil.
 
-Sua tarefa e construir respostas completas, detalhadas e fundamentadas, usando SOMENTE o CONTEUDO informado em CONTEXTO.
+Sua tarefa e construir respostas exaustivas, minuciosas e fundamentadas, usando SOMENTE o CONTEUDO informado em CONTEXTO.
 Jamais use conhecimento externo.
 
 Caso o contexto nao traga informacoes suficientes, escreva exatamente:
@@ -163,22 +163,26 @@ Caso o contexto nao traga informacoes suficientes, escreva exatamente:
 
 Siga este formato de resposta:
 
-Resumo:
-- Produza 1 ou 2 frases que resumam o ponto central.
+Resumo executivo:
+- Produza 2 frases concisas que apresentem a ideia central e o objetivo principal do contexto.
 
-Explicacao aprofundada:
-- Organize o material em blocos ou subtitulos, quando fizer sentido.
-- Para cada tema importante, redija paragrafos com pelo menos 3 frases, explorando o maximo de detalhes do contexto.
-- Inclua listas numeradas ou hierarquicas (1., 1.1, etc.) sempre que o contexto trouxer classificacoes, etapas, sintomas, sinais, criterios, escalas, dados temporais ou estatisticos.
-- Transcreva valores numericos, medidas, faixas etarias, frequencias e exemplos concretos.
-- Se o contexto mencionar tabelas ou quadros, traduza os principais itens em texto corrido ou listas legiveis.
-- Aponte relacoes causais, condicoes associadas e comparacoes mencionadas.
-- Se houver lacunas ou hipoteses no contexto, registre-as explicitamente.
+Mapa do contexto:
+- Comece listando os temas principais em uma estrutura numerada (1., 2., ...).
+- Para cada tema, crie subtitulos e redija paragrafos completos (minimo 4 frases), explorando todos os detalhes existentes.
+- Use marcadores hierarquicos (1., 1.1., 1.1.1) para descrever classificacoes, diagnosticos diferenciais, fases clinicas, sintomas, dados epidemiologicos, mecanismos fisiopatologicos e tratamentos.
+- Transcreva todos os valores numericos, faixas etarias, percentuais, escalas, cut-offs, datas e exemplos.
+- Se o contexto mencionar tabelas ou quadros, converta cada linha em frases preservando as relacoes entre colunas.
+- Se o contexto mencionar estudos, cite ano, amostra, metodologia e conclusoes.
+- Se existirem lacunas, divergencias ou hipoteses, registre-as explicitamente em uma subseccao "Pontos em aberto".
 
-Acoes ou implicacoes praticas:
-- Liste recomendacoes, condutas, orientacoes, riscos ou consequencias clinicas descritas.
-- Se nao houver orientacoes no contexto, escreva "Nao ha acoes adicionais no contexto."
+Implicacoes e condutas:
+- Liste, em ordem de prioridade, as condutas praticas, riscos, precaucoes, recomendacoes, follow-up ou impacto terapeutico descritos.
+- Caso nao haja orientacoes aplicaveis, escreva "Nao ha acoes adicionais no contexto.".
 
+Regras finais:
+- Use conectivos que reforcem a logica do texto (portanto, entretanto, alem disso, consequentemente).
+- Evite repeticoes, nao adicione "Fontes:" e nunca use conhecimento fora do contexto.
+- Termine cada subtitulo apenas quando todos os detalhes relacionados estiverem cobertos.
 Nao repita frases desnecessarias, nao adicione "Fontes:" e nao use conhecimento externo.
 
 CONTEXTO:
@@ -227,7 +231,7 @@ def get_qa_chain_for_user(user_slug: str) -> Optional[RetrievalQA]:
     prompt = PromptTemplate(
         template=PROMPT_TEMPLATE, input_variables=["context", "question"]
     )
-    retriever = vectordb.as_retriever(search_kwargs={"k": 8})
+    retriever = vectordb.as_retriever(search_kwargs={"k": 12})
     qa_chain_cache[user_slug] = RetrievalQA.from_chain_type(
         Ollama(model="llama3.1:8b", base_url="http://127.0.0.1:11434", temperature=0.2),
         retriever=retriever,
@@ -462,7 +466,7 @@ def process_and_index_pdf(user_slug: str, file_path: Path, filename: str) -> Non
     try:
         loader = PyPDFLoader(str(file_path))
         documents = loader.load()
-        splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=200)
+        splitter = RecursiveCharacterTextSplitter(chunk_size=2200, chunk_overlap=400)
         chunks = splitter.split_documents(documents)
         vectordb.add_documents(chunks)
         vectordb.persist()
