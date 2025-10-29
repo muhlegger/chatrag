@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 type SourceMeta = { source: string; page?: number };
 type IndexStatus = "idle" | "queued" | "processing" | "done" | "error";
 type Msg = { sender: "user" | "bot"; text: string };
+type LLMProvider = "ollama" | "gemini";
 
 type TokenResponse = { access_token: string; token_type: string };
 
@@ -84,9 +85,10 @@ async function apiStatus(filename: string, token: string) {
   return res.json() as Promise<{ filename: string; status: IndexStatus; detail?: string }>;
 }
 
-async function apiAsk(query: string, token: string) {
+async function apiAsk(query: string, token: string, provider: LLMProvider) {
   const form = new FormData();
   form.append("query", query);
+  form.append("provider", provider);
   const res = await fetch(`${API_BASE}/chat/`, {
     method: "POST",
     headers: authHeaders(token),
@@ -207,6 +209,7 @@ export default function App() {
 
   const [file, setFile] = useState<File | null>(null);
   const [fileStatus, setFileStatus] = useState<IndexStatus | null>(null);
+  const [provider, setProvider] = useState<LLMProvider>("ollama");
   const [question, setQuestion] = useState("");
   const [busy, setBusy] = useState(false);
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -314,7 +317,7 @@ export default function App() {
     setQuestion("");
     setBusy(true);
     try {
-      const r = await apiAsk(q, token);
+      const r = await apiAsk(q, token, provider);
       const sources = normalizeSources(r.sources);
       const answerWithSources = composeAnswer(r.answer ?? "-", sources);
       setMessages(prev => [...prev, { sender: "bot", text: answerWithSources }]);
@@ -421,7 +424,19 @@ export default function App() {
           </section>
 
           <section className="bg-[var(--surface)] rounded-xl border border-[var(--border)]">
-            <div ref={scrollRef} className="h-[420px] overflow-y-auto px-4 py-4 space-y-4 bg-[var(--surface-muted)] rounded-t-xl">
+            <div className="p-3 border-b border-[var(--border)] flex items-center justify-end">
+              <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)] mr-3">Provedor LLM</div>
+              <select
+                value={provider}
+                onChange={(e) => setProvider(e.target.value as LLMProvider)}
+                className="px-3 py-1.5 text-sm rounded-xl border border-[var(--border)] bg-[var(--surface)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
+              >
+                <option value="ollama">Ollama</option>
+                <option value="gemini">Gemini</option>
+              </select>
+            </div>
+
+            <div ref={scrollRef} className="h-[420px] overflow-y-auto px-4 py-4 space-y-4 bg-[var(--surface-muted)]">
               {messages.length === 0 && (
                 <div className="h-full grid place-items-center text-center text-[var(--text-muted)]">
                   Envie um PDF e faça uma pergunta.

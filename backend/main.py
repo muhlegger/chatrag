@@ -8,6 +8,7 @@ import os
 import re
 from collections import defaultdict
 from datetime import datetime, timedelta
+from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Literal, Optional
 
@@ -35,8 +36,15 @@ from langchain_community.vectorstores import Chroma
 from langchain.chains import RetrievalQA
 from langchain_core.prompts import PromptTemplate
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 StatusLiteral = Literal["queued", "processing", "done", "error"]
+
+
+class LLMProvider(str, Enum):
+    OLLAMA = "ollama"
+    GEMINI = "gemini"
+
 
 # --- Configurações de autenticação ---
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me")
@@ -60,7 +68,7 @@ UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 VECTOR_DB_ROOT.mkdir(parents=True, exist_ok=True)
 
 vector_store_cache: Dict[str, Optional[Chroma]] = {}
-qa_chain_cache: Dict[str, Optional[RetrievalQA]] = {}
+qa_chain_cache: Dict[str, Dict[str, Optional[RetrievalQA]]] = defaultdict(dict)
 index_status: Dict[str, Dict[str, StatusLiteral]] = defaultdict(dict)
 index_errors: Dict[str, Dict[str, str]] = defaultdict(dict)
 
@@ -220,29 +228,56 @@ def get_vectordb_for_user(user_slug: str) -> Optional[Chroma]:
     return vector_store_cache[user_slug]
 
 
+def get_llm(provider: LLMProvider):
+    if provider == LLMProvider.OLLAMA:
+        return Ollama(
+            model="llama3.1:8b", base_url="http://127.0.0.1:11434", temperature=0.2
+        )
+    if provider == LLMProvider.GEMINI:
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            raise ValueError("GOOGLE_API_KEY nao configurada para o provedor Gemini.")
+        return ChatGoogleGenerativeAI(
+            model="gemini-1.5-flash-latest", google_api_key=api_key, temperature=0.2
+        )
+    raise NotImplementedError(f"Provedor {provider} nao implementado.")
+
+
 def reset_user_chain(user_slug: str) -> None:
-    qa_chain_cache.pop(user_slug, None)
-
-
-def get_qa_chain_for_user(user_slug: str) -> Optional[RetrievalQA]:
     if user_slug in qa_chain_cache:
-        return qa_chain_cache[user_slug]
+        del qa_chain_cache[user_slug]
+
+
+def get_qa_chain_for_user(
+    user_slug: str, provider: LLMProvider
+) -> Optional[RetrievalQA]:
+    if qa_chain_cache[user_slug].get(provider):
+        return qa_chain_cache[user_slug][provider]
+
     vectordb = get_vectordb_for_user(user_slug)
     if vectordb is None:
-        qa_chain_cache[user_slug] = None
         return None
+
+    try:
+        llm = get_llm(provider)
+    except (ValueError, NotImplementedError) as exc:
+        logger.error("Falha ao inicializar LLM para %s: %s", provider, exc)
+        return None
+
     prompt = PromptTemplate(
         template=PROMPT_TEMPLATE, input_variables=["context", "question"]
     )
     retriever = vectordb.as_retriever(search_kwargs={"k": 12})
-    qa_chain_cache[user_slug] = RetrievalQA.from_chain_type(
-        Ollama(model="llama3.1:8b", base_url="http://127.0.0.1:11434", temperature=0.2),
+
+    chain = RetrievalQA.from_chain_type(
+        llm,
         retriever=retriever,
         chain_type="stuff",
         chain_type_kwargs={"prompt": prompt},
         return_source_documents=True,
     )
-    return qa_chain_cache[user_slug]
+    qa_chain_cache[user_slug][provider] = chain
+    return chain
 
 
 # --- Inicialização de embeddings ---
@@ -330,12 +365,17 @@ async def _require_runtime_ready(user_slug: str) -> Optional[JSONResponse]:
     return None
 
 
-async def _require_chain_ready(user_slug: str) -> Optional[JSONResponse]:
+async def _require_chain_ready(
+    user_slug: str, provider: LLMProvider
+) -> Optional[JSONResponse]:
     if resp := await _require_runtime_ready(user_slug):
         return resp
-    if get_qa_chain_for_user(user_slug) is None:
+    if get_qa_chain_for_user(user_slug, provider) is None:
         return JSONResponse(
-            status_code=503, content={"error": "Cadeia RAG indisponivel."}
+            status_code=503,
+            content={
+                "error": f"Cadeia RAG indisponivel para o provedor '{provider.value}'."
+            },
         )
     return None
 
@@ -405,6 +445,7 @@ async def index_status_endpoint(
 @app.post("/chat/", summary="Consultar PDFs indexados")
 async def chat(
     query: str = Form(...),
+    provider: LLMProvider = Form(LLMProvider.OLLAMA),
     current_user: str = Depends(get_current_user),
 ):
     if not query:
@@ -412,16 +453,21 @@ async def chat(
             status_code=400, content={"error": "A pergunta nao pode ser vazia."}
         )
     user_slug = slugify_user(current_user)
-    if resp := await _require_chain_ready(user_slug):
+    if resp := await _require_chain_ready(user_slug, provider):
         return resp
 
-    chain = get_qa_chain_for_user(user_slug)
+    chain = get_qa_chain_for_user(user_slug, provider)
     if chain is None:
         return JSONResponse(
             status_code=503, content={"error": "Cadeia RAG indisponivel."}
         )
 
-    logger.info("Pergunta recebida de %s: %s", current_user, query)
+    logger.info(
+        "Pergunta recebida de %s (provedor %s): %s",
+        current_user,
+        provider.value,
+        query,
+    )
     try:
         result = chain.invoke({"query": query})
     except Exception as exc:

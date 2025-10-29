@@ -8,10 +8,10 @@ chromadb
 pypdf
 sentence-transformers
 python-multipart
-langchain-google-genai
 passlib[bcrypt]
 python-jose[cryptography]
 email-validator
+langchain-google-genai
 
 # fastapi
 # uvicorn[standard]
