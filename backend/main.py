@@ -85,12 +85,15 @@ class AuthResponse(BaseModel):
 
 
 def _load_users() -> Dict[str, Dict[str, str]]:
-    if USERS_DB_PATH.exists():
-        try:
-            return json.loads(USERS_DB_PATH.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            logger.warning("Arquivo de usuarios corrompido; reiniciando banco.")
-    return {}
+    if not USERS_DB_PATH.exists():
+        USERS_DB_PATH.write_text("{}", encoding="utf-8")
+        return {}
+    try:
+        return json.loads(USERS_DB_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        logger.warning("Arquivo de usuarios corrompido; reiniciando banco.")
+        USERS_DB_PATH.write_text("{}", encoding="utf-8")
+        return {}
 
 
 def _save_users(users: Dict[str, Dict[str, str]]) -> None:
