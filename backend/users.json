@@ -1,1 +1,10 @@
-{}
+{
+  "guga1911@gmail.com": {
+    "hashed_password": "$pbkdf2-sha256$29000$8b4XYmwNoVRKCeEcg7C21g$wLFkvPH5Cz9fsD5Vi.2nCXp.ZsAwGT4Adb9gM4ZS9ik",
+    "created_at": "2025-10-31T00:07:38.650994"
+  },
+  "gumuhlegger@gmail.com": {
+    "hashed_password": "$pbkdf2-sha256$29000$X6v1nrM25ry3FgLAOEdICQ$A6s.Ypcs9/9pQSBe5RUvFO3cJoHOyYoMYQYL0DACZdU",
+    "created_at": "2025-10-31T01:21:32.443637"
+  }
+}

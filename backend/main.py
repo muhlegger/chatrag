@@ -9,7 +9,7 @@ import re
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import (
     BackgroundTasks,
@@ -29,11 +29,12 @@ from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr
 
 from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.llms import Ollama
 from langchain_community.vectorstores import Chroma
-from langchain.chains import RetrievalQA
 from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import Runnable
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 StatusLiteral = Literal["queued", "processing", "done", "error"]
@@ -60,9 +61,78 @@ UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 VECTOR_DB_ROOT.mkdir(parents=True, exist_ok=True)
 
 vector_store_cache: Dict[str, Optional[Chroma]] = {}
-qa_chain_cache: Dict[str, Optional[RetrievalQA]] = {}
+qa_chain_cache: Dict[str, Optional[LocalRetrievalQA]] = {}
 index_status: Dict[str, Dict[str, StatusLiteral]] = defaultdict(dict)
 index_errors: Dict[str, Dict[str, str]] = defaultdict(dict)
+
+
+class LocalRetrievalQA:
+    """Cadeia simples de RAG compativel com a API `invoke`/`ainvoke` do LangChain."""
+
+    def __init__(self, retriever, prompt: PromptTemplate, llm: Runnable) -> None:
+        self._retriever = retriever
+        self._prompt_chain = prompt | llm | StrOutputParser()
+
+    @staticmethod
+    def _format_documents(documents: List[Any]) -> str:
+        return "\n\n".join(
+            getattr(doc, "page_content", "") for doc in documents if getattr(doc, "page_content", "")
+        )
+
+    @staticmethod
+    def _extract_question(payload: Dict[str, Any]) -> str:
+        if not isinstance(payload, dict):
+            raise ValueError("Payload deve ser um dicionario.")
+        candidate = (payload.get("query") or payload.get("question") or "").strip()
+        if not candidate:
+            raise ValueError("Pergunta nao pode ser vazia.")
+        return candidate
+
+    def _sync_retrieve(self, question: str) -> List[Any]:
+        if hasattr(self._retriever, "invoke"):
+            documents = self._retriever.invoke(question)
+        elif hasattr(self._retriever, "get_relevant_documents"):
+            documents = self._retriever.get_relevant_documents(question)
+        elif hasattr(self._retriever, "_get_relevant_documents"):
+            documents = self._retriever._get_relevant_documents(question)
+        else:
+            raise AttributeError("Retriever nao disponibiliza busca sincrona.")
+        if not isinstance(documents, list):
+            raise TypeError("Resposta do retriever nao eh uma lista de documentos.")
+        return documents
+
+    async def _async_retrieve(self, question: str) -> List[Any]:
+        if hasattr(self._retriever, "ainvoke"):
+            documents = await self._retriever.ainvoke(question)
+        elif hasattr(self._retriever, "aget_relevant_documents"):
+            documents = await self._retriever.aget_relevant_documents(question)
+        elif hasattr(self._retriever, "_aget_relevant_documents"):
+            documents = await self._retriever._aget_relevant_documents(question)
+        else:
+            raise AttributeError("Retriever nao disponibiliza busca assincrona.")
+        if not isinstance(documents, list):
+            raise TypeError("Resposta do retriever nao eh uma lista de documentos.")
+        return documents
+
+    def _build_prompt_input(self, question: str, documents: List[Any]) -> Dict[str, str]:
+        return {
+            "context": self._format_documents(documents),
+            "question": question,
+        }
+
+    def invoke(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        question = self._extract_question(payload)
+        documents = self._sync_retrieve(question)
+        prompt_input = self._build_prompt_input(question, documents)
+        answer = self._prompt_chain.invoke(prompt_input)
+        return {"result": answer, "source_documents": documents}
+
+    async def ainvoke(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        question = self._extract_question(payload)
+        documents = await self._async_retrieve(question)
+        prompt_input = self._build_prompt_input(question, documents)
+        answer = await self._prompt_chain.ainvoke(prompt_input)
+        return {"result": answer, "source_documents": documents}
 
 # --- Modelos Pydantic ---
 
@@ -224,7 +294,7 @@ def reset_user_chain(user_slug: str) -> None:
     qa_chain_cache.pop(user_slug, None)
 
 
-def get_qa_chain_for_user(user_slug: str) -> Optional[RetrievalQA]:
+def get_qa_chain_for_user(user_slug: str) -> Optional[LocalRetrievalQA]:
     if user_slug in qa_chain_cache:
         return qa_chain_cache[user_slug]
     vectordb = get_vectordb_for_user(user_slug)
@@ -235,12 +305,14 @@ def get_qa_chain_for_user(user_slug: str) -> Optional[RetrievalQA]:
         template=PROMPT_TEMPLATE, input_variables=["context", "question"]
     )
     retriever = vectordb.as_retriever(search_kwargs={"k": 12})
-    qa_chain_cache[user_slug] = RetrievalQA.from_chain_type(
-        Ollama(model="llama3.1:8b", base_url="http://127.0.0.1:11434", temperature=0.2),
+    qa_chain_cache[user_slug] = LocalRetrievalQA(
         retriever=retriever,
-        chain_type="stuff",
-        chain_type_kwargs={"prompt": prompt},
-        return_source_documents=True,
+        prompt=prompt,
+        llm=Ollama(
+            model=os.getenv("OLLAMA_MODEL", "llama3.1:8b"),
+            base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
+            temperature=float(os.getenv("OLLAMA_TEMPERATURE", "0.2")),
+        ),
     )
     return qa_chain_cache[user_slug]
 

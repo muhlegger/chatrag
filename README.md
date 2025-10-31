@@ -1,90 +1,99 @@
 # Portal RAG
 
-Portal RAG é um workspace de Retrieval-Augmented Generation focado em PDFs. O backend (FastAPI + LangChain + Chroma + Ollama) indexa os documentos por usuário e o frontend (React + Vite + Tailwind) entrega o chat com fontes exibidas no próprio texto.
+Portal RAG é um workspace de Retrieval-Augmented Generation voltado para PDFs. O backend em FastAPI (LangChain + Chroma + Ollama) indexa documentos por usuário, enquanto o frontend em React entrega um chat com respostas estruturadas e citações embutidas.
 
 ## Pré-requisitos
 
 - Python 3.11 ou superior (testado em 3.13)
 - Node.js 18 ou superior
-- [Ollama](https://ollama.com/) instalado e com o modelo **llama3.1:8b** baixado:
+- [Ollama](https://ollama.com/) instalado e com o modelo `llama3.1:8b` disponível:
   ```powershell
   ollama pull llama3.1:8b
+  ollama serve
   ```
-- Windows PowerShell (comandos abaixo) ou shell equivalente
+- Windows PowerShell (ou shell equivalente)
 
-## Como rodar (clone ou .zip)
+## Variáveis de ambiente úteis
 
-1. Descompacte o projeto ou faça `git clone`.
-2. Entre na pasta `backend/`:
+| Variável                     | Padrão                     | Propósito                                           |
+|-----------------------------|----------------------------|-----------------------------------------------------|
+| `SECRET_KEY`                | `change-me`                | Chave usada para assinar o JWT                     |
+| `FRONTEND_ORIGINS`          | `http://localhost:5173`    | Domínios liberados no CORS                         |
+| `UPLOAD_DIRECTORY`          | `data`                     | Pasta temporária para PDFs                         |
+| `CHROMA_DB_DIRECTORY`       | `db`                       | Raiz da base vetorial por usuário                  |
+| `OLLAMA_MODEL`              | `llama3.1:8b`              | Modelo carregado pelo servidor Ollama              |
+| `OLLAMA_BASE_URL`           | `http://127.0.0.1:11434`   | Endpoint do Ollama                                 |
+| `OLLAMA_TEMPERATURE`        | `0.2`                      | Temperatura usada nas gerações                     |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `120`                   | Expiração do JWT em minutos                        |
+
+## Passo a passo rápido
+
+1. **Clone ou baixe o repositório.**
+2. **Backend**
    ```powershell
    cd backend
    python -m venv .venv
    .\.venv\Scripts\Activate.ps1
    pip install -r requirements.txt
-   ```
-   > Variáveis opcionais: `SECRET_KEY` (segredo do JWT), `FRONTEND_ORIGINS`, `UPLOAD_DIRECTORY`, `CHROMA_DB_DIRECTORY`. Caso não configure, os valores padrão definidos no código serão usados.
-
-3. Com a venv ativa, inicie a API:
-   ```powershell
    uvicorn main:app --reload --port 8000
    ```
+   O arquivo `users.json` é criado automaticamente ao registrar o primeiro usuário.
 
-4. (Primeiros passos) A API criará automaticamente `backend/users.json` caso não exista. Use o frontend para cadastrar usuários.
-
-5. Em outro terminal, prepare o frontend:
+3. **Frontend** (outro terminal)
    ```powershell
-   cd ..rontend
+   cd frontend
    npm install
    npm run dev
    ```
-   - O arquivo `frontend/.env` já aponta para `http://127.0.0.1:8000`. Ajuste apenas se mudar o host/porta do backend.
-   - O Vite informará a URL (por padrão `http://localhost:5173`).
+   Ajuste o `frontend/.env` caso troque o host ou porta do backend. A URL padrão do Vite é `http://localhost:5173`.
 
-6. Fluxo no navegador:
-   - Cadastre uma conta no formulário inicial (o frontend usa JWT e isola os PDFs por usuário).
-   - Faça upload de um PDF; acompanhe o status (queued → processing → done).
-   - Envie perguntas; as respostas vêm formatadas com “Resumo executivo”, “Mapa do contexto”, “Implicações” e as fontes incorporadas ao texto.
+4. **Fluxo no navegador**
+   - Registre um usuário (e-mail + senha ≥ 8 caracteres).
+   - Envie um PDF e acompanhe o status `queued → processing → done`.
+   - Faça perguntas; o backend retorna resposta com resumo executivo, mapa do contexto, implicações e as fontes referenciadas.
 
 ## Estrutura
 
 ```
-portal-rag/
+chatrag/
 ├── backend/
-│   ├── main.py              # API FastAPI + autenticação JWT + Chroma per-user
+│   ├── main.py            # API FastAPI + autenticação JWT + pipeline RAG
 │   ├── requirements.txt
-│   └── users.json           # criado/atualizado automaticamente
+│   └── users.json         # Criado automaticamente (gitignore)
 ├── frontend/
-│   ├── src/App.tsx          # Tela de login, upload e chat
+│   ├── src/App.tsx        # Tela de login, upload, polling e chat
 │   ├── package.json
-│   └── .env                 # aponta para o backend
+│   └── .env               # Aponta para o backend local
 └── README.md
 ```
 
-## Rotas principais do backend
+## Endpoints principais
 
-- `POST /auth/register` – cria usuário (email + senha ≥ 8 caracteres)
-- `POST /auth/login` – devolve JWT
-- `POST /upload/` – recebe PDF e agenda indexação (requires Bearer token)
-- `GET /index-status/{filename}` – retorna `queued | processing | done | error`
-- `POST /chat/` – responde usando o RAG do usuário logado
-- `GET /health` – status geral (lista usuários com cache carregado)
+- `POST /auth/register` — cadastro (email + senha ≥ 8)
+- `POST /auth/login` — autenticação e emissão do JWT
+- `POST /upload/` — upload de PDF e agendamento da indexação (token obrigatório)
+- `GET /index-status/{filename}` — status (`queued`, `processing`, `done`, `error`)
+- `POST /chat/` — consulta RAG com citações
+- `GET /health` — status geral do serviço
 
-## Observações importantes
-
-- **Modelo Ollama**: `llama3.1:8b` precisa estar rodando localmente (`ollama serve`).
-- **Armazenamento**: PDFs temporários ficam em `backend/data/<slug-do-usuário>` e o banco vetorial em `backend/db/<slug>`. Cada usuário enxerga apenas seus documentos.
-- **Chunking**: cada PDF é dividido em blocos de 2 200 caracteres (overlap 400) e o retriever consulta os 12 blocos mais relevantes por pergunta para respostas mais completas.
-- **Produção**: use um `SECRET_KEY` forte e considere rodar sem `--reload`. Para liberar a API externamente, ajuste CORS (`FRONTEND_ORIGINS`).
-
-## Checks rápidos
+## Checks úteis
 
 ```powershell
-# Opcional: lint do backend
+# Lint opcional do backend
 pip install mypy ruff
 ruff check backend
 
-# Build frontend
+# Build do frontend
 npm run build
+
+# Smoke test rápido do pipeline RAG (usa LLM mockado)
+python backend/_localrag_smoke.py
 ```
 
-Qualquer dúvida ou melhoria desejada, abra uma issue ou adapte o prompt/arquitetura conforme o seu cenário.
+> O script `_localrag_smoke.py` executa uma cadeia RAG com retriever/LLM mockados para validar o pipeline sem depender do Ollama. Para rodar o chatbot real, deixe o `ollama serve` ativo e mantenha o modelo definido em `OLLAMA_MODEL` disponível localmente.
+
+## Próximos passos sugeridos
+
+- Gerar imagens Docker separadas para backend e frontend.
+- Adicionar testes automatizados (`pytest` + `httpx.AsyncClient`) cobrindo upload e chat.
+- Configurar logs estruturados ou rastreamento distribuído em produção.
